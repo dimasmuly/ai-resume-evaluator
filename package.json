@@ -1,0 +1,31 @@
+{
+  "name": "ai-resume",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@langchain/community": "^0.3.56",
+    "@langchain/core": "^0.3.77",
+    "@langchain/openai": "^0.6.13",
+    "bull": "^4.16.5",
+    "chromadb": "^3.0.15",
+    "docxtemplater": "^3.66.3",
+    "dotenv": "^16.6.1",
+    "exponential-backoff": "^3.1.2",
+    "express": "^5.1.0",
+    "mammoth": "^1.11.0",
+    "multer": "^2.0.2",
+    "node-fetch": "^3.3.2",
+    "open": "^10.2.0",
+    "openai": "^5.23.0",
+    "pdf-parse": "^1.1.1",
+    "uuid": "^13.0.0"
+  }
+}
