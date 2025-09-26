@@ -370,7 +370,7 @@ Project Deliverable Evaluation (1–5 scale per parameter):
 
 // Gemini API Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-1.5-flash'; // Changed to stable model
+const GEMINI_MODEL = 'gemini-2.0-flash'; // Changed to stable model
 
 if (!GEMINI_API_KEY) {
   console.error('Error: GEMINI_API_KEY is not set in .env file.');
@@ -572,25 +572,16 @@ Relevant Job Requirements:\n${cvContextText}\n\nCV Text:\n${cvText}\n\nReturn ON
       initialScore = { correctness: 1, code_quality: 1, error_handling: 1, documentation: 1, creativity: 1 };
     }
 
-    // Calculate weighted score
-    const scores = {
-      correctness: initialScore.correctness || 1,
-      code_quality: initialScore.code_quality || 1,
-      error_handling: initialScore.error_handling || 1,
-      documentation: initialScore.documentation || 1,
-      creativity: initialScore.creativity || 1
-    };
-    
     const weightedScore = (
       scores.correctness * 0.30 +
       scores.code_quality * 0.25 +
       scores.error_handling * 0.20 +
       scores.documentation * 0.15 +
       scores.creativity * 0.10
-    ) * 2; // Convert to 10-point scale
+    ); 
 
-    // Step 4: Generate detailed project feedback
-    const feedbackPrompt = `Provide detailed feedback for this project evaluation.\n\nProject Report: ${reportText}\n\nScores: ${JSON.stringify(scores)}\nWeighted Score: ${weightedScore.toFixed(1)}/10\n\nProvide constructive feedback covering strengths and areas for improvement. Return ONLY a valid JSON object:\n\n{\n  "project_score": ${weightedScore.toFixed(1)},\n  "project_feedback": "Detailed feedback explaining the scores and providing recommendations"\n}`;
+    // Step 4: Generate detailed project feedback (tambah instruksi tegas untuk fokus ke project report)
+    const feedbackPrompt = `Provide detailed feedback for this project evaluation based SOLELY on the project report provided. Do NOT reference or incorporate any information from the resume, CV, or any other sources outside the project report.\n\nProject Report: ${reportText}\n\nScores: ${JSON.stringify(scores)}\nWeighted Score: ${weightedScore.toFixed(1)}/5\n\nProvide constructive feedback covering strengths and areas for improvement. Return ONLY a valid JSON object:\n\n{\n  "project_score": ${weightedScore.toFixed(1)},\n  "project_feedback": "Detailed feedback explaining the scores and providing recommendations"\n}`;
 
     let projectResult;
     try {
@@ -604,7 +595,7 @@ Relevant Job Requirements:\n${cvContextText}\n\nCV Text:\n${cvText}\n\nReturn ON
     }
 
     // Step 5: Generate overall summary with enhanced prompt
-    const summaryPrompt = `Create a comprehensive evaluation summary based on the following data:\n\nCV Match Rate: ${cvResult.cv_match_rate}\nCV Feedback: ${cvResult.cv_feedback}\nProject Score: ${projectResult.project_score}/10\nProject Feedback: ${projectResult.project_feedback}\n\nProvide a 3-5 sentence summary that includes:\n1. Overall candidate fit assessment\n2. Key strengths identified\n3. Main gaps or areas for improvement\n4. Final hiring recommendation with reasoning\n\nFormat the response as a cohesive paragraph that flows naturally from strengths to gaps to recommendations.`;
+    const summaryPrompt = `Create a comprehensive evaluation summary based on the following data:\n\nCV Match Rate: ${cvResult.cv_match_rate}\nCV Feedback: ${cvResult.cv_feedback}\nProject Score: ${projectResult.project_score}/5\nProject Feedback: ${projectResult.project_feedback}\n\nProvide a 3-5 sentence summary that includes:\n1. Overall candidate fit assessment\n2. Key strengths identified\n3. Main gaps or areas for improvement\n4. Final hiring recommendation with reasoning\n\nFormat the response as a cohesive paragraph that flows naturally from strengths to gaps to recommendations.`;
 
     let overallSummary;
     try {
