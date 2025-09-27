@@ -332,16 +332,28 @@ async function extractText(filePath) {
 }
 
 // Utility function to safely parse JSON with fallback
-function safeJsonParse(jsonString, fallback) {
+function safeJsonParse(jsonString, fallbackValue = null) {
   try {
-    // Try to extract JSON if it's embedded in text
-    const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
-    const jsonContent = jsonMatch ? jsonMatch[0] : jsonString;
+    // Clean the string from markdown and control characters
+    let cleaned = jsonString
+      .replace(/```json\s*/g, '')  // Remove ```json
+      .replace(/```\s*/g, '')      // Remove ```
+      .replace(/[\x00-\x1F\x7F]/g, '')  // Remove control characters
+      .trim();
     
-    return JSON.parse(jsonContent);
+    // Find JSON object boundaries
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    
+    if (start !== -1 && end !== -1 && end > start) {
+      cleaned = cleaned.substring(start, end + 1);
+    }
+    
+    return JSON.parse(cleaned);
   } catch (error) {
-    console.error('Error parsing JSON:', error);
-    return fallback;
+    console.error('JSON parsing failed:', error.message);
+    console.error('Raw string:', jsonString.substring(0, 200) + '...');
+    return fallbackValue;
   }
 }
 
@@ -370,7 +382,7 @@ Project Deliverable Evaluation (1–5 scale per parameter):
 
 // Gemini API Configuration
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_MODEL = 'gemini-2.0-flash'; // Changed to stable model
+const GEMINI_MODEL = 'gemini-2.0-flash-001';  
 
 if (!GEMINI_API_KEY) {
   console.error('Error: GEMINI_API_KEY is not set in .env file.');
@@ -420,8 +432,8 @@ class RateLimiter {
 const rateLimiter = new RateLimiter(15, 60000); // 15 requests per minute
 
 // Enhanced Gemini API function with advanced error handling
-async function callGemini(prompt, taskType = 'general', retryCount = 0) {
-  const maxRetries = 3;
+async function callGemini(prompt, taskType = 'general', retryCount = 0, extraConfig = {}) {
+  const maxRetries = 5;  // Naikkan ke 5 untuk handle overload (503) lebih banyak
   const temperature = getTemperatureForTask(taskType);
   
   try {
@@ -430,6 +442,14 @@ async function callGemini(prompt, taskType = 'general', retryCount = 0) {
     
     console.log(`Calling Gemini API (attempt ${retryCount + 1}/${maxRetries + 1}) for task: ${taskType}`);
     console.log(`Using temperature: ${temperature}`);
+    
+    const generationConfig = {
+      temperature: temperature,
+      topK: 40,
+      topP: 0.95,
+      maxOutputTokens: 2048,
+      ...extraConfig  
+    };
     
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`, {
       method: 'POST',
@@ -440,12 +460,7 @@ async function callGemini(prompt, taskType = 'general', retryCount = 0) {
         contents: [{
           parts: [{ text: prompt }]
         }],
-        generationConfig: {
-          temperature: temperature,
-          topK: 40,
-          topP: 0.95,
-          maxOutputTokens: 2048,
-        },
+        generationConfig: generationConfig,  // Pakai config yang digabung
         safetySettings: [
           {
             category: "HARM_CATEGORY_HARASSMENT",
@@ -457,7 +472,7 @@ async function callGemini(prompt, taskType = 'general', retryCount = 0) {
           }
         ]
       }),
-      timeout: 30000 // 30 second timeout
+      timeout: 30000
     });
 
     if (!response.ok) {
@@ -487,7 +502,8 @@ async function callGemini(prompt, taskType = 'general', retryCount = 0) {
       error.message.includes('Rate limit') ||
       error.message.includes('503') ||
       error.message.includes('502') ||
-      error.message.includes('500');
+      error.message.includes('500') ||
+      error.message.includes('404');  
     
     if (isRetryable && retryCount < maxRetries) {
       const delay = Math.pow(2, retryCount) * 1000 + Math.random() * 1000; // Exponential backoff with jitter
@@ -500,16 +516,37 @@ async function callGemini(prompt, taskType = 'general', retryCount = 0) {
   }
 }
 
-// Enhanced performEvaluation with RAG integration
-async function performEvaluation(evalId) {
-  const evalData = results[evalId];
-  if (!evalData) {
-    throw new Error('Evaluation data not found');
-  }
-
+async function performEvaluation(evalId, evalData) {
   try {
-    console.log(`Starting evaluation for ID: ${evalId}`);
-    evalData.status = 'processing';
+    // Validasi input
+    if (!evalData || !evalData.cvPath || !evalData.reportPath) {
+      throw new Error('Invalid evalData: missing cvPath or reportPath');
+    }
+    
+    console.log('Starting evaluation for:', evalData.id);
+    console.log('CV Path:', evalData.cvPath);
+    console.log('Report Path:', evalData.reportPath);
+    
+    const jobRequirements = `
+    We are looking for a Full Stack Developer with:
+    - Strong experience in JavaScript, Node.js, React
+    - Database management skills (SQL/NoSQL)
+    - API development and integration
+    - Version control with Git
+    - Problem-solving and analytical thinking
+    - Good communication skills
+    - Experience with cloud platforms is a plus
+    `;
+    
+    // Tambahkan definisi scoringCriteria di sini
+    const scoringCriteria = `
+    Evaluation criteria on a scale of 1-5:
+    - Correctness (30%): Does the solution work as expected? Are all requirements met?
+    - Code Quality & Structure (25%): Is the code well-organized, readable, and maintainable?
+    - Resilience & Error Handling (20%): Does the solution handle errors gracefully?
+    - Documentation & Explanation (15%): Is the code well-documented? Are design decisions explained?
+    - Creativity/Bonus (10%): Did the candidate go beyond requirements or show innovative approaches?
+    `;
 
     // Extract text from uploaded files
     const cvText = await extractText(evalData.cvPath);
@@ -538,21 +575,32 @@ Relevant Job Requirements:\n${cvContextText}\n\nCV Text:\n${cvText}\n\nReturn ON
       extractedCV = { name: "Unknown", technical_skills: [], experience_years: 0, relevant_experience: "Error extracting CV data", education: "Not specified", achievements: [] };
     }
 
-    // Step 2: Compare CV with job requirements using RAG
-    const jobContext = await retrieveRelevantContext(`${extractedCV.technical_skills.join(' ')} ${extractedCV.relevant_experience}`, 'job', 3);
-    const jobContextText = jobContext.map(ctx => ctx.content).join('\n\n');
-    
-    const comparisonPrompt = `Evaluate CV match against job requirements.\n\nJob Requirements:\n${jobContextText}\n\nCandidate Profile:\n${JSON.stringify(extractedCV)}\n\nEvaluate based on:\n- Technical Skills Match (40%)\n- Experience Level (25%)\n- Relevant Achievements (20%)\n- Cultural/Collaboration Fit (15%)\n\nReturn ONLY a valid JSON object:\n{\n  "cv_match_rate": "X%",\n  "cv_feedback": "Detailed feedback with strengths and gaps"\n}`;
+    const comparisonPrompt = `
+Analyze the CV against the job requirements and return ONLY a valid JSON object with this exact structure:
 
-    let cvResult;
+{
+  "cv_match_rate": "percentage like 75%",
+  "cv_feedback": "detailed feedback about strengths and gaps"
+}
+
+IMPORTANT: Return ONLY the JSON object above, no markdown, no explanations, no additional text.
+
+CV Content:
+${cvText}
+
+Job Requirements:
+${jobRequirements}
+`;
+
+    let cvComparison;
     try {
-      console.log('Step 2: Comparing CV with job requirements using RAG...');
-      const comparisonResponse = await callGemini(comparisonPrompt, 'comparison');
-      cvResult = safeJsonParse(comparisonResponse, { cv_match_rate: "0%", cv_feedback: "Error evaluating CV match rate." });
-      console.log('CV comparison successful:', cvResult);
+      console.log('Step 2: Comparing CV with job requirements...');
+      const cvResult = await callGemini(comparisonPrompt, 'comparison');
+      cvComparison = safeJsonParse(cvResult, { cv_match_rate: "0%", cv_feedback: "Error evaluating CV match rate." });
+      console.log('CV comparison successful:', cvComparison);
     } catch (error) {
       console.error('Error in CV comparison:', error);
-      cvResult = { cv_match_rate: "0%", cv_feedback: "Error evaluating CV match rate." };
+      cvComparison = { cv_match_rate: "0%", cv_feedback: "Error evaluating CV match rate." };
     }
 
     // Step 3: Score project deliverables with RAG context
@@ -560,7 +608,7 @@ Relevant Job Requirements:\n${cvContextText}\n\nCV Text:\n${cvText}\n\nReturn ON
     const projectContextText = projectContext.map(ctx => ctx.content).join('\n\n');
     
     const scoringPrompt = `Score this project report based on the evaluation criteria.\n\nScoring Rubric:\n${projectContextText}\n\nProject Report:\n${reportText}\n\nEvaluate each criterion (1-5 scale):\n- Correctness (30%)\n- Code Quality & Structure (25%)\n- Resilience & Error Handling (20%)\n- Documentation & Explanation (15%)\n- Creativity/Bonus (10%)\n\nReturn ONLY a valid JSON object:\n{\n  "correctness": 1-5,\n  "code_quality": 1-5,\n  "error_handling": 1-5,\n  "documentation": 1-5,\n  "creativity": 1-5\n}`;
-
+    
     let initialScore;
     try {
       console.log('Step 3: Scoring project with RAG context...');
@@ -571,7 +619,15 @@ Relevant Job Requirements:\n${cvContextText}\n\nCV Text:\n${cvText}\n\nReturn ON
       console.error('Error in project scoring:', error);
       initialScore = { correctness: 1, code_quality: 1, error_handling: 1, documentation: 1, creativity: 1 };
     }
-
+    
+    const scores = {
+      correctness: initialScore.correctness || 1,
+      code_quality: initialScore.code_quality || 1,
+      error_handling: initialScore.error_handling || 1,
+      documentation: initialScore.documentation || 1,
+      creativity: initialScore.creativity || 1
+    };
+    
     const weightedScore = (
       scores.correctness * 0.30 +
       scores.code_quality * 0.25 +
@@ -579,24 +635,40 @@ Relevant Job Requirements:\n${cvContextText}\n\nCV Text:\n${cvText}\n\nReturn ON
       scores.documentation * 0.15 +
       scores.creativity * 0.10
     ); 
+    
+    const feedbackPrompt = `
+Evaluate the provided content STRICTLY as a PROJECT REPORT (assume it is the project report even if it resembles a resume). Extract and evaluate any project-related details mentioned. Return ONLY a valid JSON object with this exact structure:
 
-    // Step 4: Generate detailed project feedback (tambah instruksi tegas untuk fokus ke project report)
-    const feedbackPrompt = `Provide detailed feedback for this project evaluation based SOLELY on the project report provided. Do NOT reference or incorporate any information from the resume, CV, or any other sources outside the project report.\n\nProject Report: ${reportText}\n\nScores: ${JSON.stringify(scores)}\nWeighted Score: ${weightedScore.toFixed(1)}/5\n\nProvide constructive feedback covering strengths and areas for improvement. Return ONLY a valid JSON object:\n\n{\n  "project_score": ${weightedScore.toFixed(1)},\n  "project_feedback": "Detailed feedback explaining the scores and providing recommendations"\n}`;
+{
+  "project_score": integer_number_between_1_and_5 (MUST be an integer from 1 to 5, no decimals like 5.5),
+  "project_feedback": "Confirmation: This evaluation is based solely on the uploaded project report file. Detailed feedback about the PROJECT quality, implementation details, code structure, error handling, documentation, creativity, and areas for improvement. If the content lacks project-specific details (e.g., seems resume-like), note that and suggest providing a dedicated project report, but still evaluate available project descriptions. Include a breakdown of scores per category (e.g., Correctness: X/5, Code Quality: Y/5, etc.) and explain why each score was given."
+}
 
+IMPORTANT: Base your evaluation strictly on the content provided below and the scoring criteria. Keep scores as integers 1-5. Return ONLY the JSON object, no markdown, no explanations, no additional text.
+
+Provided Content (Project Report):
+${reportText}
+
+Scoring Criteria:
+${scoringCriteria}
+`;
+    
     let projectResult;
     try {
       console.log('Step 4: Generating project feedback...');
-      const feedbackResponse = await callGemini(feedbackPrompt, 'feedback');
+      const feedbackResponse = await callGemini(feedbackPrompt, 'feedback', 0, { /* params */ });
+      console.log('Raw project feedback response from Gemini:', feedbackResponse);
+      
       projectResult = safeJsonParse(feedbackResponse, { project_score: weightedScore, project_feedback: "Error generating project feedback." });
       console.log('Project feedback successful:', projectResult);
     } catch (error) {
       console.error('Error in project feedback:', error);
       projectResult = { project_score: weightedScore, project_feedback: "Error generating project feedback." };
     }
-
+    
     // Step 5: Generate overall summary with enhanced prompt
-    const summaryPrompt = `Create a comprehensive evaluation summary based on the following data:\n\nCV Match Rate: ${cvResult.cv_match_rate}\nCV Feedback: ${cvResult.cv_feedback}\nProject Score: ${projectResult.project_score}/5\nProject Feedback: ${projectResult.project_feedback}\n\nProvide a 3-5 sentence summary that includes:\n1. Overall candidate fit assessment\n2. Key strengths identified\n3. Main gaps or areas for improvement\n4. Final hiring recommendation with reasoning\n\nFormat the response as a cohesive paragraph that flows naturally from strengths to gaps to recommendations.`;
-
+    const summaryPrompt = `Create a comprehensive evaluation summary based on the following data:\n\nCV Match Rate: ${cvComparison.cv_match_rate}\nCV Feedback: ${cvComparison.cv_feedback}\nProject Score: ${projectResult.project_score}/5\nProject Feedback: ${projectResult.project_feedback}\n\nProvide a 3-5 sentence summary that includes:\n1. Overall candidate fit assessment\n2. Key strengths identified\n3. Main gaps or areas for improvement\n4. Final hiring recommendation with reasoning\n\nFormat the response as a cohesive paragraph that flows naturally from strengths to gaps to recommendations.`;
+    
     let overallSummary;
     try {
       console.log('Step 5: Generating overall summary...');
@@ -606,12 +678,12 @@ Relevant Job Requirements:\n${cvContextText}\n\nCV Text:\n${cvText}\n\nReturn ON
       console.error('Error generating summary:', error);
       overallSummary = "Unable to generate summary due to an error.";
     }
-
+    
     // Store result
     evalData.status = 'completed';
     evalData.evaluation = {
-      cv_match_rate: cvResult.cv_match_rate,
-      cv_feedback: cvResult.cv_feedback,
+      cv_match_rate: cvComparison.cv_match_rate,
+      cv_feedback: cvComparison.cv_feedback,
       project_score: projectResult.project_score,
       project_feedback: projectResult.project_feedback,
       overall_summary: overallSummary
@@ -648,7 +720,7 @@ const evaluationQueue = new Queue('evaluation-queue', 'redis://127.0.0.1:6379');
 
 evaluationQueue.process(async (job) => {
   const { evalId } = job.data;
-  await performEvaluation(evalId);
+  await performEvaluation(evalId, results[evalId]);  // Tambahkan evalId sebagai argumen pertama
 });
 
 app.post('/evaluate', (req, res) => {
